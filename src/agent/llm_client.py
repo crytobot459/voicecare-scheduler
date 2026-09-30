@@ -38,15 +38,65 @@ EXTRACT_SYSTEM = (
 
 CONFIRM_SYSTEM = (
     "You are a confirmation classifier. Output JSON only: {\"verdict\": \"yes|no|unclear\"}. "
-    "yes: yes, yeah, yep, confirm, confirmed, correct, that's right, sure, book it, sounds good. "
+    "yes: yes, yeah, yep, confirm, confirmed, correct, that's right, sure, book it, sounds good, "
+    "ok, okay, that works, go ahead, lock it in, please do, perfect. "
     "no: no, cancel, don't book, stop, never mind (without a new time). "
     "unclear: everything else, questions, hesitation, single filler words. "
     "A message with a new time (digits, o'clock, am/pm, morning/afternoon, tomorrow, today) "
     "is NOT a plain no — classify by its confirmation words, default unclear if mixed."
 )
 
+# Warm receptionist voice for spoken wording (kept separate from NLU temp 0.0).
+DIALOGUE_SYSTEM = (
+    "You are Mai, a warm clinic receptionist speaking slow, clear English on the phone. "
+    "Echo what you heard briefly, ask one thing at a time, vary your phrasing, "
+    "use short backchannels like 'Got it', 'Perfect', 'Thanks'. "
+    "Never invent specialty/doctor/slot. Keep it to 1-2 short sentences. "
+    "Always end confirmations with an explicit YES prompt (uppercase YES)."
+)
 
-def _gemini_call(system: str, user: str, timeout: float = 20.0) -> str:
+
+def _dialogue_call(prompt: str, timeout: float = 20.0) -> str:
+    """Human phrasing via Gemini (temp 0.7). Returns '' on any failure."""
+    try:
+        if not load_gemini_key():
+            return ""
+        raw = _gemini_call(DIALOGUE_SYSTEM, prompt, timeout=timeout,
+                           temperature=0.7, max_tokens=120)
+        raw = (raw or "").strip().strip('"')
+        if raw and len(raw) < 300:
+            return raw
+    except Exception:
+        pass
+    return ""
+
+
+def _pick(variants: list, key: str = "") -> str:
+    """Deterministic variety: same slot -> same phrasing (stable for tests/video)."""
+    if not variants:
+        return ""
+    if not key:
+        return variants[0]
+    h = 0
+    for ch in key:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return variants[h % len(variants)]
+
+
+def _correction_prefix(history=None) -> str:
+    try:
+        hist = history or []
+        tail = " ".join(str(m.get("text", "") if isinstance(m, dict) else m)
+                        for m in hist[-3:]).lower()
+        if any(w in tail for w in ("instead", "change", "no,", "correction", "rather")):
+            return "Got the change — "
+    except Exception:
+        pass
+    return ""
+
+
+def _gemini_call(system: str, user: str, timeout: float = 20.0, temperature: float = 0.0,
+                 max_tokens: int = 512) -> str:
     global _GEMINI_DEAD
     if _GEMINI_DEAD:
         raise RuntimeError("gemini disabled (prior 404/invalid key)")
@@ -60,7 +110,7 @@ def _gemini_call(system: str, user: str, timeout: float = 20.0) -> str:
     body = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"parts": [{"text": user[:2000]}]}],
-        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 512},
+        "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
     }
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
@@ -202,15 +252,15 @@ def fallback_extract(transcript: str) -> dict:
 
 def fallback_confirm(text: str) -> str:
     low = f" {(text or '').lower()} "
-    if re.search(r"\b(no|cancel|don't book|stop|never mind|not now)\b", low):
+    if re.search(r"\b(no|cancel|don't book|dont book|stop|never mind|not now)\b", low):
         # correction with a new time is not a plain cancel
         if re.search(r"\d|o'clock|oclock|\bam\b|\bpm\b|morning|afternoon|tomorrow|today", low):
             # has edit -> let caller merge; verdict by confirmation words
-            if re.search(r"\b(yes|yeah|yep|confirm|sure|correct|book it)\b", low):
+            if re.search(r"\b(yes|yeah|yep|confirm|sure|correct|book it|sounds good|that works|go ahead|lock it|please do|perfect|ok|okay)\b", low):
                 return "yes"
             return "unclear"
         return "no"
-    if re.search(r"\b(yes|yeah|yep|confirm|confirmed|correct|that's right|sure|book it|sounds good|ok|okay)\b", low):
+    if re.search(r"\b(yes|yeah|yep|confirm|confirmed|correct|that's right|thats right|sure|book it|sounds good|that works|go ahead|lock it|please do|perfect|ok|okay)\b", low):
         return "yes"
     return "unclear"
 
@@ -295,7 +345,7 @@ def detect_correction(original: str, barge_in: str) -> str:
     return "merge"
 
 
-def generate_readback(ent: dict) -> str:
+def generate_readback(ent: dict, history=None) -> str:
     spec = (ent or {}).get("specialty", "") or "checkup"
     spec_t = spec.title() if spec else "Checkup"
     doc = (ent or {}).get("doctor", "")
@@ -307,31 +357,173 @@ def generate_readback(ent: dict) -> str:
         time_t = f"{hour:02d}:{minute:02d}" if minute else f"{hour:02d}:00"
     else:
         time_t = "unspecified time"
-    # Prefer LLM phrasing when a key exists, else deterministic template.
+    # Prefer LLM phrasing when a key exists, else warm deterministic variants.
+    # NOTE: every variant keeps uppercase YES so the consent gate + tests stay green.
     try:
         if load_gemini_key():
-            raw = _gemini_call(
+            hist_txt = ""
+            try:
+                hist = history or []
+                tail = [str(m.get("text", "") if isinstance(m, dict) else m)[-120:]
+                        for m in hist[-4:]]
+                hist_txt = " | ".join(t for t in tail if t)
+            except Exception:
+                hist_txt = ""
+            raw = _dialogue_call(
+                f"Confirm {spec_t}{doc_t} at {time_t} {day}. "
+                f"Recent turns: {hist_txt[:400]}. "
+                "Warm one-sentence confirmation ending with 'Say YES to confirm.'",
+            )
+            if raw and "YES" in raw:
+                return raw.strip()
+            raw2 = _gemini_call(
                 "You write one short clinic confirmation sentence. No JSON, one sentence, English.",
                 f"Confirm {spec_t}{doc_t} at {time_t} {day}. Ask: Should I book this? Say YES to confirm.",
             )
-            if raw and len(raw) < 300:
+            if raw2 and len(raw2) < 300 and "YES" in raw2:
+                return raw2.strip()
+    except Exception:
+        pass
+    prefix = _correction_prefix(history) or _pick(
+        ["Got it — ", "Perfect — ", "Thanks! "],
+        key=f"{spec_t}|{day}|{hour}",
+    )
+    variants = [
+        (f"{prefix}{spec_t}{doc_t} at {time_t} {day}. "
+         "Shall I go ahead and book that for you? Just say YES to confirm."),
+        (f"{prefix}I've got {spec_t}{doc_t}, {day} at {time_t}. "
+         "Should I lock it in? Say YES and I'll book it."),
+        (f"{prefix}so that's {spec_t}{doc_t}, {day} at {time_t} — does that sound right? "
+         "Say YES to confirm and I'll book it."),
+    ]
+    return _pick(variants, key=f"{spec_t}|{day}|{hour}|{prefix}")
+
+
+def full_slot_message(ent: dict, suggest_hour=None) -> str:
+    """Warm 'slot just filled' message. Always keeps 'fully booked' for tests."""
+    spec = ((ent or {}).get("specialty", "") or "checkup").title()
+    day = (ent or {}).get("date_label", "") or (ent or {}).get("day", "") or "that day"
+    hour = (ent or {}).get("hour", "")
+    hour_s = f"{hour}:00" if isinstance(hour, int) else str(hour or "that time")
+    try:
+        if load_gemini_key():
+            raw = _dialogue_call(
+                f"Tell the patient {hour_s} {day} {spec} is fully booked, apologize briefly, "
+                f"offer {suggest_hour}:00 instead or ask for another time. "
+                "Must include the words 'fully booked'. One or two short sentences.",
+            )
+            if raw and "fully booked" in raw.lower():
                 return raw.strip()
     except Exception:
         pass
-    return (f"I found {spec_t}{doc_t} at {time_t} {day}. "
-            "Should I book this? Say YES to confirm.")
+    if suggest_hour is not None:
+        return (f"Ah, {hour_s} {day} {spec} is fully booked — sorry, that slot just filled up. "
+                f"I do have {suggest_hour}:00 open — would that work for you, or prefer another time?")
+    return (f"Ah, {hour_s} {day} {spec} is fully booked — sorry about that. "
+            "What other time works for you?")
 
 
-def missing_question(missing: list, ent: dict | None = None) -> str:
+def booked_message(rec: dict) -> str:
+    """Warm booking confirmation. Keeps specialty + day strings for tests/demo."""
+    spec = (rec.get("specialty", "") or "checkup").title()
+    doc = rec.get("doctor", "")
+    doc_t = f" with Dr. {doc}" if doc else ""
+    day = rec.get("date_label", "")
+    hour = rec.get("hour", 9)
+    minute = rec.get("minute", 0) or 0
+    try:
+        hh = f"{int(hour):02d}:{int(minute):02d}"
+    except Exception:
+        hh = str(hour)
+    bid = rec.get("id", "")
+    try:
+        if load_gemini_key():
+            raw = _dialogue_call(
+                f"Confirm booking: {spec}{doc_t}, {day} at {hh}, ID {bid}. "
+                "Warm, brief, remind to arrive 15 min early with insurance card.",
+            )
+            if raw and spec in raw and day in raw:
+                return raw.strip()
+    except Exception:
+        pass
+    opener = _pick(
+        ["All set — you're booked! ", "Wonderful, it's confirmed! ", "Great news — all booked! "],
+        key=str(bid),
+    )
+    return (f"{opener}You're seeing {spec}{doc_t}, {day} at {hh} "
+            f"(booking {bid}). Please arrive 15 minutes early and bring your insurance card. "
+            "Anything else I can help with?")
+
+
+def escalation_message() -> str:
+    try:
+        if load_gemini_key():
+            raw = _dialogue_call(
+                "The line is unclear. Apologize warmly and say you're transferring "
+                "to the nurse hotline. One short sentence.",
+            )
+            if raw and len(raw) < 200:
+                return raw.strip()
+    except Exception:
+        pass
+    return ("Sorry, I'm having trouble hearing you — let me transfer you "
+            "to our nurse hotline so we can take good care of you.")
+
+
+def cancel_message() -> str:
+    return "No problem at all — I've cancelled that. Just tell me a new time whenever you're ready."
+
+
+def ask_again_message() -> str:
+    return "Sorry, I didn't quite catch the day and time — could you say it again? For example, tomorrow morning at 9 o'clock."
+
+
+def missing_question(missing: list, ent: dict | None = None, history=None) -> str:
     ent = ent or {}
+    # Try one warm LLM line first so phrasing varies visit to visit.
+    try:
+        if load_gemini_key():
+            need = ",".join(missing or [])
+            have = f"{ent.get('specialty','')}|{ent.get('date_label','')}|{ent.get('hour','')}"
+            raw = _dialogue_call(
+                f"Patient is missing: {need}. Already have: {have}. "
+                "Ask for the FIRST missing item only (specialty, then day, then time), "
+                "warm and brief, one question.",
+            )
+            if raw and len(raw) < 250:
+                low = raw.lower()
+                if ("specialty" in missing and "specialt" in low) or \
+                   ("specialty" not in missing and "?" in raw):
+                    return raw.strip()
+                if "specialty" not in missing:
+                    return raw.strip()
+    except Exception:
+        pass
     if "specialty" in missing:
-        return ("Sure. Which specialty would you like? "
-                "(Cardiology, General Internal Medicine, ENT, Dental)")
+        return _pick([
+            ("Sure, happy to help — which specialty do you need? "
+             "(Cardiology, General Internal Medicine, ENT, Dental)"),
+            ("Got it — and which specialty would you like? "
+             "We have Cardiology, General Internal Medicine, ENT, and Dental."),
+            ("Thanks! Which specialty should I book — Cardiology, General Internal Medicine, ENT, or Dental?"),
+        ], key=str(ent.get("date_label", "")) + str(ent.get("hour", "")))
     if "date" in missing or "day" in missing:
         spec = ent.get("specialty", "")
         prefix = f"For {spec.title()} " if spec else ""
-        return (f"{prefix}which day works? "
-                "(e.g. today / tomorrow / tomorrow morning / day after tomorrow)")
+        return _pick([
+            (f"{prefix}which day works best for you? "
+             "(e.g. today / tomorrow / tomorrow morning / day after tomorrow)"),
+            (f"{prefix}what day suits you — today, tomorrow, or day after tomorrow?"),
+        ], key=str(spec))
     if "time" in missing:
-        return "What time works? The clinic runs 07:00-17:00 (e.g. 9 o'clock)."
+        spec = (ent.get("specialty", "") or "").title()
+        day = ent.get("date_label", "") or ent.get("day", "")
+        parts = f"{spec} {day}".strip()
+        ctx = f" for {parts}" if parts else ""
+        return _pick([
+            (f"Got it{ctx} — what time suits you best? We're open 07:00 to 17:00, "
+             "e.g. 9 o'clock works great."),
+            (f"Thanks{ctx}! Morning or afternoon better for you? We're open 7 to 5."),
+            (f"Perfect{ctx}. Which time should I check — e.g. 9 o'clock?"),
+        ], key=str(ent.get("specialty", "")) + str(ent.get("date_label", "")))
     return "Could you say that again?"

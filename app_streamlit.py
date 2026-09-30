@@ -30,19 +30,22 @@ except Exception:
         return None
 
 
-def ask_once(text="", audio_bytes=None, audio_suffix=".wav", barge=""):
+def ask_once(text="", audio_bytes=None, audio_suffix=".wav", barge="", history=None):
     if audio_bytes:
         with tempfile.NamedTemporaryFile(delete=False, suffix=audio_suffix) as f:
             f.write(audio_bytes)
             path = f.name
-        return run_pipeline(path, barge_in=barge or "", auto_consent=True, confirm_text="")
+        return run_pipeline(path, barge_in=barge or "", auto_consent=True, confirm_text="",
+                            history=history or [])
     return run_pipeline(text or "I'd like to book a cardiology appointment tomorrow morning",
-                        barge_in=barge or "", auto_consent=True, confirm_text="")
+                        barge_in=barge or "", auto_consent=True, confirm_text="",
+                        history=history or [])
 
 
-def confirm_pending(pending_text, yes=True):
+def confirm_pending(pending_text, yes=True, history=None):
     verdict = "yes, book it" if yes else "no, cancel"
-    return run_pipeline(pending_text, auto_consent=True, confirm_text=verdict)
+    return run_pipeline(pending_text, auto_consent=True, confirm_text=verdict,
+                        history=history or [])
 
 
 def fmt_ms(ms):
@@ -198,10 +201,11 @@ def play_voice(text):
 def handle_new_turn(user_text):
     st.session_state.status = "listening"
     pending = st.session_state.pending_text
+    hist = list(st.session_state.get("history", []) or [])
     if pending and user_text:
-        r = ask_once(text=pending, barge=user_text)
+        r = ask_once(text=pending, barge=user_text, history=hist)
     else:
-        r = ask_once(text=user_text)
+        r = ask_once(text=user_text, history=hist)
     st.session_state.status = "speaking"
     st.session_state.last_result = r
     push("patient", user_text)
@@ -235,7 +239,8 @@ def handle_confirm(yes=True):
     if not pending:
         return
     with st.spinner("🔊 Assistant is speaking..."):
-        r = confirm_pending(pending, yes=yes)
+        r = confirm_pending(pending, yes=yes,
+                            history=list(st.session_state.get("history", []) or []))
     st.session_state.last_result = r
     if yes and r.get("booking"):
         st.session_state.booking = r.get("booking")
@@ -330,14 +335,15 @@ def build_take_audio():
     """
     lines = []
     for m in st.session_state.get("history", []):
-        who = "Patient" if m.get("who") == "patient" else "Assistant"
+        who = "Patient" if m.get("who") == "patient" else "Receptionist"
         txt = (m.get("text") or "").strip()
         if txt:
-            lines.append(f"{who}: {txt}")
+            # Ellipsis gives TTS a natural breath between turns.
+            lines.append(f"{who}: {txt}... ")
     if not lines:
         st.session_state.take_audio_error = "empty dialogue"
         return ""
-    script = "VoiceCare demo. " + " ".join(lines)
+    script = "VoiceCare clinic visit... " + " ".join(lines)
     try:
         mp3 = tts_speak(script[:1500])
         if mp3:

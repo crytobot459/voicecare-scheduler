@@ -58,9 +58,10 @@ def _finalize_entities(raw: dict, transcript: str) -> dict:
 
 
 def run_agent_turn(text: str, barge_in: str = "", auto_consent: bool = True,
-                   confirm_text: str | None = None) -> dict:
+                   confirm_text: str | None = None, history=None) -> dict:
     stages, events = {}, []
     state = "LISTENING"
+    hist = list(history or [])
 
     transcript, listen_ms, backend, err = stt_client.transcribe(text, HERE)
     stages["listen_ms"] = round(listen_ms, 1)
@@ -88,7 +89,7 @@ def run_agent_turn(text: str, barge_in: str = "", auto_consent: bool = True,
             store.audit(AUDIT_LOG, "barge_cancel", {"transcript": transcript, "barge_in": barge_in})
             stages["act_ms"] = 0.0
             stages["speak_ms"] = 0.0
-            return _out(transcript + " " + barge_in, ent, conf, None, "Cancelled — please tell me again.",
+            return _out(transcript + " " + barge_in, ent, conf, None, llm_client.cancel_message(),
                         stages, events, backend, "", "", False, False, "UNDERSTANDING", [], None)
         raw2 = llm_client.extract_appointment(transcript + " " + barge_in)
         ent2 = _finalize_entities(raw2, transcript + " " + barge_in)
@@ -105,21 +106,21 @@ def run_agent_turn(text: str, barge_in: str = "", auto_consent: bool = True,
             events.append("consent: cancel intent — nothing written")
             stages["act_ms"] = 0.0
             stages["speak_ms"] = 0.0
-            return _out(transcript, ent, conf, None, "Cancelled — please tell me again.",
+            return _out(transcript, ent, conf, None, llm_client.cancel_message(),
                         stages, events, backend, "", "", False, False, "UNDERSTANDING", [], None)
         events.append("escalating to a human: low confidence — calling the clinic hotline")
         store.audit(AUDIT_LOG, "escalate", {"transcript": transcript, "conf": round(conf, 2)})
         stages["act_ms"] = 0.0
         stages["speak_ms"] = 0.0
         return _out(transcript, ent, conf, None,
-                    "I didn't catch that — transferring you to the nurse hotline.",
+                    llm_client.escalation_message(),
                     stages, events, backend, "", "", False, False, "ESCALATED", [], None,
                     escalated=True)
 
     # missing slots -> ask one question
     miss = tools.missing_fields(ent)
     if miss and confirm_text is not None:
-        q = llm_client.missing_question(miss, ent)
+        q = llm_client.missing_question(miss, ent, hist)
         events.append(f"asking missing info: {','.join(miss)} — one question at a time")
         stages["act_ms"] = 0.0
         stages["speak_ms"] = 0.0
@@ -136,15 +137,18 @@ def run_agent_turn(text: str, barge_in: str = "", auto_consent: bool = True,
         stages["act_ms"] = 0.0
         stages["speak_ms"] = 0.0
         if amsg == "missing date/time":
-            reply = "I didn't catch the day/time — please say it again, e.g. tomorrow morning 9 o'clock."
+            reply = llm_client.ask_again_message()
         else:
-            reply = amsg
+            try:
+                reply = llm_client.full_slot_message(ent, suggest) or amsg
+            except Exception:
+                reply = amsg
         return _out(transcript, ent, conf, None, reply, stages, events, backend,
                     "", "", False, False, "CHECKING", [], suggest)
 
     # confirmation gate
     state = "CONFIRMATION"
-    readback = llm_client.generate_readback(ent)
+    readback = llm_client.generate_readback(ent, hist)
     if confirm_text is not None:
         verdict = llm_client.confirm_verdict(confirm_text)
         store.audit(AUDIT_LOG, "voice_consent",
@@ -154,7 +158,7 @@ def run_agent_turn(text: str, barge_in: str = "", auto_consent: bool = True,
             events.append("consent: NO heard — cancelled, nothing written")
             stages["act_ms"] = 0.0
             stages["speak_ms"] = 0.0
-            return _out(transcript, ent, conf, None, "Cancelled — please tell me again.",
+            return _out(transcript, ent, conf, None, llm_client.cancel_message(),
                         stages, events, backend, readback, "", False, False,
                         "CONFIRMATION", [], None)
         if verdict == "unclear":
@@ -174,12 +178,16 @@ def run_agent_turn(text: str, barge_in: str = "", auto_consent: bool = True,
         stages["act_ms"] = round(now_ms() - t0, 1)
         stages["speak_ms"] = 0.0
         events.append(f"recovery/write blocked: {amsg2}")
-        return _out(transcript, ent, conf, None, amsg2 or "Slot just filled — pick another time.",
+        try:
+            blocked_reply = llm_client.full_slot_message(ent, None) or amsg2
+        except Exception:
+            blocked_reply = amsg2 or "Slot just filled — pick another time."
+        return _out(transcript, ent, conf, None, blocked_reply,
                     stages, events, backend, readback, "", False, False, "CHECKING", [], None)
     if not ent.get("specialty"):
         stages["act_ms"] = round(now_ms() - t0, 1)
         stages["speak_ms"] = 0.0
-        return _out(transcript, ent, conf, None, llm_client.missing_question(["specialty"], ent),
+        return _out(transcript, ent, conf, None, llm_client.missing_question(["specialty"], ent, hist),
                     stages, events, backend, readback, "", False, True, "UNDERSTANDING",
                     ["specialty"], None)
     if not auto_consent and confirm_text is None:
@@ -201,9 +209,12 @@ def run_agent_turn(text: str, barge_in: str = "", auto_consent: bool = True,
     if confirm_text is None and auto_consent:
         events.append("consent: typed auto-confirm mode (labeled) — live use needs spoken YES")
     t1 = now_ms()
-    reply = (f"Booked successfully: {rec['specialty'].title()} with Dr. {rec['doctor']}, "
-             f"{rec['date_label']} at {rec['hour']:02d}:{rec['minute']:02d}. "
-             "Please arrive 15 minutes early and bring your insurance card.")
+    try:
+        reply = llm_client.booked_message(rec)
+    except Exception:
+        reply = (f"Booked successfully: {rec['specialty'].title()} with Dr. {rec['doctor']}, "
+                 f"{rec['date_label']} at {rec['hour']:02d}:{rec['minute']:02d}. "
+                 "Please arrive 15 minutes early and bring your insurance card.")
     stages["speak_ms"] = round(now_ms() - t1, 1)
     ics = tools.build_ics(rec)
     total = round(sum(stages.values()), 1)

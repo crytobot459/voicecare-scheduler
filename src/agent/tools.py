@@ -75,10 +75,11 @@ def check_availability(ent: dict, bookings: list) -> tuple:
                     break
             spec_t = specialty.title() if specialty else ""
             if nxt is not None:
-                return False, (f"Sorry, {hour}:00 {date_label} {spec_t} is fully booked. "
-                               f"Would you like {nxt}:00 instead?"), nxt
-            return False, (f"Sorry, {hour}:00 {date_label} {spec_t} is fully booked. "
-                           "Please pick another time."), None
+                return False, (f"Ah, {hour}:00 {date_label} {spec_t} is fully booked — sorry, "
+                               f"that slot just filled up. I do have {nxt}:00 open — "
+                               "would that work for you, or prefer another time?"), nxt
+            return False, (f"Ah, {hour}:00 {date_label} {spec_t} is fully booked — sorry about that. "
+                           "What other time works for you?"), None
     return True, "", None
 
 

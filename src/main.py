@@ -111,8 +111,8 @@ def build_ics(rec: dict) -> str:
     return tools.build_ics(rec)
 
 
-def build_readback(ent: dict) -> str:
-    return llm_client.generate_readback(ent)
+def build_readback(ent: dict, history=None) -> str:
+    return llm_client.generate_readback(ent, history)
 
 
 def entities_en(ent: dict) -> str:
@@ -186,9 +186,9 @@ def book(ent: dict, consent: bool) -> tuple:
 
 
 def run_pipeline(text: str, barge_in: str = "", auto_consent: bool = True,
-                 confirm_text: str | None = None) -> dict:
+                 confirm_text: str | None = None, history=None) -> dict:
     r = run_agent_turn(text, barge_in=barge_in, auto_consent=auto_consent,
-                       confirm_text=confirm_text)
+                       confirm_text=confirm_text, history=history)
     # compat: expose day alias + keyterms + words for old callers
     ent = r.get("entities", {}) or {}
     ent = dict(ent)
