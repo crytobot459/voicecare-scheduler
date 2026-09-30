@@ -188,14 +188,27 @@ def render_pipeline(r):
     st.caption("Latency · " + " · ".join(f"{k} {fmt_ms(v)}" for k, v in stages.items()))
 
 
+def play_audio(path):
+    """Play an audio file with autoplay (falls back to click-to-play)."""
+    try:
+        if path.endswith(".mp3"):
+            st.audio(path, format="audio/mp3", autoplay=True)
+        else:
+            st.audio(path, autoplay=True)
+    except TypeError:
+        try:
+            st.audio(path)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def play_voice(text):
     try:
         mp3 = tts_speak(text or "")
         if mp3:
-            try:
-                st.audio(mp3, format="audio/mp3")
-            except Exception:
-                st.audio(mp3)
+            play_audio(mp3)
     except Exception:
         pass
 
@@ -513,8 +526,8 @@ def main():
     take_audio = st.session_state.get("take_audio", "")
     if take_audio:
         try:
-            st.caption("🔊 Replay the take — the machine voices the whole visit (press play during recording)")
-            st.audio(take_audio)
+            st.caption("🔊 Playing the take — the machine voices the whole visit (unmute if silent)")
+            play_audio(take_audio)
         except Exception:
             pass
     elif st.session_state.get("take_audio_error") and st.session_state.get("history"):
