@@ -79,11 +79,11 @@ def push(who, text):
 def bubble(who, text):
     if who == "patient":
         st.markdown(
-            "<div style='background:#f1f5f9;border-radius:14px;padding:12px 16px;margin:8px 0;font-size:1.15rem'>"
+            "<div style='background:#f1f5f9;color:#0f172a;border-radius:14px;padding:12px 16px;margin:8px 0;font-size:1.15rem'>"
             f"🧑 <b>Patient:</b><br>{text}</div>", unsafe_allow_html=True)
     else:
         st.markdown(
-            "<div style='background:#e8f5e9;border-radius:14px;padding:12px 16px;margin:8px 0;font-size:1.15rem'>"
+            "<div style='background:#e8f5e9;color:#0f172a;border-radius:14px;padding:12px 16px;margin:8px 0;font-size:1.15rem'>"
             f"🤖 <b>Assistant:</b><br>{text}</div>", unsafe_allow_html=True)
 
 
@@ -145,7 +145,7 @@ def render_appointment_card(ent, r=None):
     stages = (r or {}).get("stages_ms", {}) if isinstance(r, dict) else {}
     lat = f"<div style='font-size:0.95rem;color:#92400e'>Latency: {' | '.join(f'{k}={v}' for k,v in stages.items())}</div>" if stages else ""
     st.markdown(
-        "<div style='border:2px solid #f59e0b;border-radius:16px;padding:16px 18px;margin:10px 0;background:#fffbeb'>"
+        "<div style='border:2px solid #f59e0b;border-radius:16px;padding:16px 18px;margin:10px 0;background:#fffbeb;color:#451a03'>"
         "<div style='text-align:center;font-size:1.3rem'>🟡 <b>APPOINTMENT CONFIRMATION</b></div>"
         "<div style='text-align:center;color:#92400e'>Not booked yet — awaiting confirmation</div>"
         f"<div style='font-size:1.15rem;margin-top:10px'>Specialty &nbsp;&nbsp;&nbsp;<b>{spec}</b></div>"
@@ -160,7 +160,7 @@ def render_success(booking):
     spec, doc, day, hour_s = _ent(None, booking)
     bid = booking.get("id", "")
     st.markdown(
-        "<div style='background:#dcfce7;border:2px solid #22c55e;border-radius:16px;padding:18px;text-align:center;margin:12px 0'>"
+        "<div style='background:#dcfce7;color:#052e16;border:2px solid #22c55e;border-radius:16px;padding:18px;text-align:center;margin:12px 0'>"
         "<div style='font-size:1.5rem'>✓ <b>APPOINTMENT BOOKED</b></div>"
         f"<div style='font-size:1.2rem;margin-top:8px'>Specialty &nbsp;<b>{spec}</b></div>"
         f"<div style='font-size:1.2rem'>Doctor &nbsp;<b>Dr. {doc}</b></div>"
@@ -400,8 +400,23 @@ def main():
         print(r.get("reply",""), "|", r.get("total_ms"), "ms")
         return
     st.set_page_config(page_title="VoiceCare — voice clinic booking")
-    st.markdown("<style>html{font-size:19px} .stButton>button{font-size:1.15rem;padding:.6rem 1.1rem;border-radius:12px}</style>",
-                unsafe_allow_html=True)
+    # Cinematic dark theme: readable on camera, cards pop on dark.
+    st.markdown(
+        "<style>"
+        "html{font-size:19px}"
+        ".stApp{background:linear-gradient(180deg,#0b1220 0%,#101b33 60%,#0b1220 100%)}"
+        "[data-testid='stAppViewContainer']{color:#f8fafc}"
+        "[data-testid='stHeader']{background:rgba(11,18,32,0)}"
+        "h1,h2,h3,p,li{color:#f8fafc !important}"
+        ".stCaption,.stMarkdown small{color:#cbd5e1 !important;font-size:1.02rem}"
+        "[data-testid='stSidebar']{background:#0d1526}"
+        "[data-testid='stSidebar'] p,[data-testid='stSidebar'] span,[data-testid='stSidebar'] label{color:#e2e8f0 !important}"
+        ".stButton>button{font-size:1.2rem;padding:.65rem 1.2rem;border-radius:12px;font-weight:700}"
+        ".stTextInput input{font-size:1.15rem}"
+        "details{border:1px solid #334155;border-radius:12px;padding:.4rem .8rem;background:#0f1a2e}"
+        "details summary{color:#f8fafc !important;font-size:1.1rem}"
+        "</style>",
+        unsafe_allow_html=True)
     try:
         sec = st.secrets.get("ASSEMBLYAI_API_KEY", "") if hasattr(st, "secrets") else ""
         if sec and not os.getenv("ASSEMBLYAI_API_KEY"):
