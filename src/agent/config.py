@@ -1,6 +1,34 @@
 #!/usr/bin/env python3
 """Agent config — English-only, env-based keys. Never log key values."""
 import os
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load project-root .env into os.environ (no override, no logging).
+
+    Lets double-click/Streamlit runs pick up local keys without exporting.
+    Real env / Streamlit secrets / sidebar always win (setdefault only).
+    """
+    try:
+        root = Path(__file__).resolve().parent.parent.parent
+        for cand in (root / ".env", Path.cwd() / ".env"):
+            if not cand.exists():
+                continue
+            for raw in cand.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip().strip("'").strip('"')
+                if k and v and k not in os.environ:
+                    os.environ[k] = v
+            break
+    except Exception:
+        pass
+
+
+_load_dotenv()
 
 WS_URL = "wss://streaming.assemblyai.com/v3/ws"
 AAI_STREAMING_MODEL = "u3-rt-pro"

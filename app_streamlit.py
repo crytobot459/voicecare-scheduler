@@ -442,16 +442,20 @@ def main():
     with tc2:
         run_clicked = st.button("▶ RUN FULL DEMO")
     if run_clicked or fresh_clicked:
-        with st.spinner("🎬 Running full demo: specialty → time → YES (real LLM)..."):
-            ok = fresh_take() if fresh_clicked else run_full_demo()
-            with st.spinner("🔊 Voicing the take (up to ~25s)..."):
-                st.session_state.take_audio = build_take_audio()
-        if ok:
-            st.success("Full demo booked — press play on the replay, then stop recording.")
-        else:
-            st.warning("Demo did not book (slot may be full on shared server). "
-                       "Try Fresh take, or Sidebar → Reset demo slots.")
-        st.rerun()
+        try:
+            with st.spinner("🎬 Running full demo: specialty → time → YES (real LLM)..."):
+                ok = fresh_take() if fresh_clicked else run_full_demo()
+                with st.spinner("🔊 Voicing the take (up to ~25s)..."):
+                    st.session_state.take_audio = build_take_audio()
+            if ok:
+                st.success("Full demo booked — press play on the replay, then stop recording.")
+            else:
+                st.warning("Demo did not book (slot may be full on shared server). "
+                           "Try Fresh take, or Sidebar → Reset demo slots.")
+            st.rerun()
+        except Exception as e:
+            # Never fail silent: show the real error so judges/users see it.
+            st.error(f"Demo failed: {str(e)[:300]} — try Sidebar → Restart call, then again.")
 
     with st.expander("▶ Demo script (tap to fill — manual step-by-step)", expanded=False):
         c1, c2, c3 = st.columns(3)
