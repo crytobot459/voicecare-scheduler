@@ -19,6 +19,32 @@ import urllib.request
 from .config import load_gemini_key, GEMINI_MODEL, GEMINI_ENDPOINT_TMPL
 
 _GEMINI_DEAD = False
+_GEMINI_COOLDOWN_UNTIL = 0.0  # epoch s; set on 429 so bursts fall back fast
+_GEMINI_COOLDOWN_S = 120.0
+_GEMINI_COOLDOWN_FILE = "/tmp/voicecare_gemini_cooldown"
+
+
+def _cooldown_active() -> bool:
+    """Process-local + file cooldown (take spawns many python processes)."""
+    try:
+        if time.time() < _GEMINI_COOLDOWN_UNTIL:
+            return True
+        with open(_GEMINI_COOLDOWN_FILE, encoding="utf-8") as f:
+            if time.time() < float((f.read() or "0").strip() or 0):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _cooldown_set() -> None:
+    global _GEMINI_COOLDOWN_UNTIL
+    _GEMINI_COOLDOWN_UNTIL = time.time() + _GEMINI_COOLDOWN_S
+    try:
+        with open(_GEMINI_COOLDOWN_FILE, "w", encoding="utf-8") as f:
+            f.write(str(_GEMINI_COOLDOWN_UNTIL))
+    except Exception:
+        pass
 
 EXTRACT_SYSTEM = (
     "You are a clinic scheduling NLU extractor. Output JSON only, no markdown. "
@@ -97,9 +123,11 @@ def _correction_prefix(history=None) -> str:
 
 def _gemini_call(system: str, user: str, timeout: float = 20.0, temperature: float = 0.0,
                  max_tokens: int = 512) -> str:
-    global _GEMINI_DEAD
+    global _GEMINI_DEAD, _GEMINI_COOLDOWN_UNTIL
     if _GEMINI_DEAD:
         raise RuntimeError("gemini disabled (prior 404/invalid key)")
+    if _cooldown_active():
+        raise RuntimeError("gemini cooling down after 429 (quota), using fast fallback")
     key = load_gemini_key()
     if not key:
         raise RuntimeError("missing GEMINI_API_KEY")
@@ -125,6 +153,11 @@ def _gemini_call(system: str, user: str, timeout: float = 20.0, temperature: flo
         code = getattr(e, "code", 0) or 0
         if code in (400, 401, 403, 404):
             _GEMINI_DEAD = True
+        if code == 429:
+            # Free-tier quota burst: cool down so the take falls back
+            # instantly (clean low latency on camera) instead of stalling
+            # 1s per call. Quota refills; next take retries automatically.
+            _cooldown_set()
         raise
     try:
         parts = out["candidates"][0]["content"]["parts"]
