@@ -25,9 +25,11 @@ except Exception:
 
 try:
     from tts import speak as tts_speak
+    import tts as _ttsmod
 except Exception:
     def tts_speak(text, out_path=""):  # type: ignore
         return None
+    _ttsmod = None  # type: ignore
 
 
 def ask_once(text="", audio_bytes=None, audio_suffix=".wav", barge="", history=None):
@@ -349,7 +351,11 @@ def build_take_audio():
         if mp3:
             st.session_state.take_audio_error = ""
             return mp3
-        st.session_state.take_audio_error = "voice service offline (no TTS lib/network)"
+        try:
+            reason = (_ttsmod.last_error if _ttsmod is not None else "") or ""
+        except Exception:
+            reason = ""
+        st.session_state.take_audio_error = reason or "voice service offline (no TTS lib/network)"
         return ""
     except Exception as e:
         st.session_state.take_audio_error = str(e)[:100] or "voice error"
