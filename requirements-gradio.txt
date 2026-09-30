@@ -1,0 +1,7 @@
+# Backup demo: HF Spaces runs app.py (Gradio) with THIS file.
+# On HF, upload this file renamed to requirements.txt (see DEPLOY_HF.md).
+# Kept separate because old gradio pins break Streamlit Cloud installs.
+gradio==4.44.1
+websocket-client==1.9.0
+edge-tts==6.1.9
+pytest>=7

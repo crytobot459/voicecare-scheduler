@@ -1,0 +1,17 @@
+.env
+.env.*
+.assemblyai_key
+work/.assemblyai_key
+*.pyc
+__pycache__/
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+.DS_Store
+out/
+*.log
+# Demo state — never commit grandma's calendar/audit (PII + demo slots)
+bookings.json
+audit.log
+.test_state_tmp/
